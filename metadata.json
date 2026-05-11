@@ -1,0 +1,5 @@
+{
+  "name": "Trustrium App",
+  "description": "A simulated crypto mining application where users can mine 'Trust' points, convert them to $RIUM tokens, and engage with features like daily check-ins, referrals, and a wallet system. The app includes a KYC process for full functionality.",
+  "requestFramePermissions": []
+}
