@@ -1,0 +1,147 @@
+name: Build Trustrium Android App
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Capacitor
+        run: npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+
+      - name: Build Vite frontend only
+        run: npx vite build
+
+      - name: Add Android platform
+        run: |
+          rm -rf android
+          ./node_modules/.bin/cap add android
+
+      - name: Sync Capacitor
+        run: ./node_modules/.bin/cap sync android
+
+      - name: Create network security config
+        run: |
+          mkdir -p android/app/src/main/res/xml
+          cat > android/app/src/main/res/xml/network_security_config.xml << 'XMLEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <network-security-config>
+              <base-config cleartextTrafficPermitted="true">
+                  <trust-anchors>
+                      <certificates src="system"/>
+                  </trust-anchors>
+              </base-config>
+          </network-security-config>
+          XMLEOF
+
+      - name: Update AndroidManifest
+        run: |
+          sed -i 's/<application/<application android:usesCleartextTraffic="true" android:networkSecurityConfig="@xml\/network_security_config"/' \
+          android/app/src/main/AndroidManifest.xml
+
+      - name: Install ImageMagick
+        run: sudo apt-get install -y imagemagick
+
+      - name: Generate Android icon sizes
+        run: |
+          mkdir -p android/app/src/main/res/mipmap-mdpi
+          mkdir -p android/app/src/main/res/mipmap-hdpi
+          mkdir -p android/app/src/main/res/mipmap-xhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxxhdpi
+          convert public/icon.png -resize 48x48   android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          convert public/icon.png -resize 48x48   android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
+          convert public/icon.png -resize 72x72   android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+          convert public/icon.png -resize 72x72   android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
+          convert public/icon.png -resize 96x96   android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          convert public/icon.png -resize 96x96   android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
+          convert public/icon.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          convert public/icon.png -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
+          convert public/icon.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          convert public/icon.png -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build DEBUG APK
+        run: cd android && ./gradlew assembleDebug
+
+      - name: Build Release AAB
+        run: cd android && ./gradlew bundleRelease
+
+      - name: Build Release APK
+        run: cd android && ./gradlew assembleRelease
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/trustrium.jks
+
+      - name: Sign Release APK
+        run: |
+          $JAVA_HOME/bin/jarsigner \
+            -verbose \
+            -sigalg SHA256withRSA \
+            -digestalg SHA-256 \
+            -keystore android/trustrium.jks \
+            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
+            -keypass "${{ secrets.KEY_PASSWORD }}" \
+            android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            "${{ secrets.KEY_ALIAS }}"
+
+      - name: Zipalign APK
+        run: |
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)/zipalign \
+            -v 4 \
+            android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            android/app/build/outputs/apk/release/Trustrium-signed.apk
+
+      - name: Sign Release AAB
+        run: |
+          $JAVA_HOME/bin/jarsigner \
+            -verbose \
+            -sigalg SHA256withRSA \
+            -digestalg SHA-256 \
+            -keystore android/trustrium.jks \
+            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
+            -keypass "${{ secrets.KEY_PASSWORD }}" \
+            android/app/build/outputs/bundle/release/app-release.aab \
+            "${{ secrets.KEY_ALIAS }}"
+
+      - name: Upload DEBUG APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trustrium-DEBUG-APK
+          path: android/app/build/outputs/apk/debug/*.apk
+
+      - name: Upload Signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trustrium-SIGNED-APK
+          path: android/app/build/outputs/apk/release/Trustrium-signed.apk
+
+      - name: Upload Signed AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trustrium-SIGNED-AAB
+          path: android/app/build/outputs/bundle/release/app-release.aab
